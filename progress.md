@@ -28,3 +28,4 @@
 - 已重新执行前端导入测试：`pnpm exec vitest run src/__tests__/integration/data-import.spec.ts`，3 个测试通过。
 - 已重新执行前端构建：`pnpm run build`，通过；仅有 Vite 分包/动态导入警告。
 - 已执行 Google OAuth client_id/client_secret 相关敏感字面量扫描，无匹配。
+- 已将修订后的初始化提交推送到 `https://github.com/uovme/CP2API.git`，远端分支 `main` 创建成功。
