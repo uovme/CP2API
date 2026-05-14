@@ -107,6 +107,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.StickySessionTTLSeconds != 3600 {
 		t.Fatalf("Gateway.OpenAIWS.StickySessionTTLSeconds = %d, want 3600", cfg.Gateway.OpenAIWS.StickySessionTTLSeconds)
 	}
+	if cfg.Gateway.OpenAIWS.AccountSelectionMode != OpenAIAccountSelectionModeSmart {
+		t.Fatalf("Gateway.OpenAIWS.AccountSelectionMode = %q, want %q", cfg.Gateway.OpenAIWS.AccountSelectionMode, OpenAIAccountSelectionModeSmart)
+	}
 	if !cfg.Gateway.OpenAIWS.SessionHashReadOldFallback {
 		t.Fatalf("Gateway.OpenAIWS.SessionHashReadOldFallback = false, want true")
 	}
@@ -1602,6 +1605,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "lb_top_k 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.LBTopK = 0 },
 			wantErr: "gateway.openai_ws.lb_top_k",
+		},
+		{
+			name:    "account_selection_mode 必须为 smart 或 round_robin",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.AccountSelectionMode = "weighted_random" },
+			wantErr: "gateway.openai_ws.account_selection_mode",
 		},
 		{
 			name:    "sticky_session_ttl_seconds 必须为正数",

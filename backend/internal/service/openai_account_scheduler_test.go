@@ -1163,6 +1163,32 @@ func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing
 	}
 }
 
+func TestDefaultOpenAIAccountScheduler_BuildRoundRobinSelectionOrder(t *testing.T) {
+	schedulerAny := newDefaultOpenAIAccountScheduler(&OpenAIGatewayService{}, nil)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
+
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 6101, Priority: 0}},
+		{account: &Account{ID: 6102, Priority: 0}},
+		{account: &Account{ID: 6103, Priority: 0}},
+	}
+	req := OpenAIAccountScheduleRequest{
+		GroupID:        int64PtrForTest(61),
+		RequestedModel: "gpt-5.1",
+	}
+
+	first := scheduler.buildRoundRobinSelectionOrder(candidates, req)
+	second := scheduler.buildRoundRobinSelectionOrder(candidates, req)
+	third := scheduler.buildRoundRobinSelectionOrder(candidates, req)
+	fourth := scheduler.buildRoundRobinSelectionOrder(candidates, req)
+
+	require.Equal(t, []int64{6101, 6102, 6103}, candidateIDsForTest(first))
+	require.Equal(t, []int64{6102, 6103, 6101}, candidateIDsForTest(second))
+	require.Equal(t, []int64{6103, 6101, 6102}, candidateIDsForTest(third))
+	require.Equal(t, []int64{6101, 6102, 6103}, candidateIDsForTest(fourth))
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesAcrossSessions(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(15)
@@ -1243,6 +1269,74 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 
 	// 多 session 应该能打散到多个账号，避免“恒定单账号命中”。
 	require.GreaterOrEqual(t, len(selected), 2)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_RoundRobinModeRotatesAccounts(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(16)
+	accounts := []Account{
+		{
+			ID:          5201,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 3,
+			Priority:    0,
+		},
+		{
+			ID:          5202,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 3,
+			Priority:    0,
+		},
+		{
+			ID:          5203,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 3,
+			Priority:    0,
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.AccountSelectionMode = config.OpenAIAccountSelectionModeRoundRobin
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selected := make([]int64, 0, 4)
+	for i := 0; i < 4; i++ {
+		selection, decision, err := svc.SelectAccountWithScheduler(
+			ctx,
+			&groupID,
+			"",
+			"",
+			"gpt-5.1",
+			nil,
+			OpenAIUpstreamTransportAny,
+			false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+		selected = append(selected, selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	}
+
+	require.Equal(t, []int64{5201, 5202, 5203, 5201}, selected)
 }
 
 func TestDeriveOpenAISelectionSeed_NoAffinityAddsEntropy(t *testing.T) {
@@ -1423,4 +1517,14 @@ func TestDefaultOpenAIAccountScheduler_IsAccountTransportCompatible_Branches(t *
 
 func int64PtrForTest(v int64) *int64 {
 	return &v
+}
+
+func candidateIDsForTest(candidates []openAIAccountCandidateScore) []int64 {
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.account != nil {
+			ids = append(ids, candidate.account.ID)
+		}
+	}
+	return ids
 }

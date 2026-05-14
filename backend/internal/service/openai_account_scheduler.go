@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 const (
@@ -225,9 +227,10 @@ func (s *openAIAccountRuntimeStats) size() int {
 }
 
 type defaultOpenAIAccountScheduler struct {
-	service *OpenAIGatewayService
-	metrics openAIAccountSchedulerMetrics
-	stats   *openAIAccountRuntimeStats
+	service             *OpenAIGatewayService
+	metrics             openAIAccountSchedulerMetrics
+	stats               *openAIAccountRuntimeStats
+	roundRobinSequences sync.Map
 }
 
 func newDefaultOpenAIAccountScheduler(service *OpenAIGatewayService, stats *openAIAccountRuntimeStats) OpenAIAccountScheduler {
@@ -383,6 +386,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}, nil
 	}
 	return nil, nil
+}
+
+type openAIRoundRobinSequence struct {
+	cursor atomic.Uint64
 }
 
 type openAIAccountCandidateScore struct {
@@ -586,6 +593,54 @@ func buildOpenAIWeightedSelectionOrder(
 	return order
 }
 
+func (s *defaultOpenAIAccountScheduler) buildRoundRobinSelectionOrder(
+	candidates []openAIAccountCandidateScore,
+	req OpenAIAccountScheduleRequest,
+) []openAIAccountCandidateScore {
+	if len(candidates) <= 1 {
+		return append([]openAIAccountCandidateScore(nil), candidates...)
+	}
+
+	ordered := append([]openAIAccountCandidateScore(nil), candidates...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if left.account.Priority != right.account.Priority {
+			return left.account.Priority < right.account.Priority
+		}
+		return left.account.ID < right.account.ID
+	})
+
+	key := openAIRoundRobinSequenceKey(req)
+	value, _ := s.roundRobinSequences.LoadOrStore(key, &openAIRoundRobinSequence{})
+	sequence, _ := value.(*openAIRoundRobinSequence)
+	if sequence == nil {
+		sequence = &openAIRoundRobinSequence{}
+	}
+	start := int((sequence.cursor.Add(1) - 1) % uint64(len(ordered)))
+	if start == 0 {
+		return ordered
+	}
+
+	rotated := make([]openAIAccountCandidateScore, 0, len(ordered))
+	rotated = append(rotated, ordered[start:]...)
+	rotated = append(rotated, ordered[:start]...)
+	return rotated
+}
+
+func openAIRoundRobinSequenceKey(req OpenAIAccountScheduleRequest) string {
+	groupID := int64(0)
+	if req.GroupID != nil {
+		groupID = *req.GroupID
+	}
+	return fmt.Sprintf("%d:%s:%s:%s:%t",
+		groupID,
+		strings.TrimSpace(req.RequestedModel),
+		req.RequiredTransport,
+		req.RequiredImageCapability,
+		req.RequireCompact,
+	)
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -754,6 +809,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
 		if len(pool) == 0 || topK <= 0 {
 			return nil
+		}
+		if s.service.openAIWSAccountSelectionMode() == config.OpenAIAccountSelectionModeRoundRobin {
+			return s.buildRoundRobinSelectionOrder(pool, req)
 		}
 		groupTopK := topK
 		if groupTopK > len(pool) {
@@ -1196,6 +1254,17 @@ func (s *OpenAIGatewayService) openAIWSLBTopK() int {
 		return s.cfg.Gateway.OpenAIWS.LBTopK
 	}
 	return 7
+}
+
+func (s *OpenAIGatewayService) openAIWSAccountSelectionMode() string {
+	if s != nil && s.cfg != nil {
+		mode := config.NormalizeOpenAIAccountSelectionMode(s.cfg.Gateway.OpenAIWS.AccountSelectionMode)
+		switch mode {
+		case config.OpenAIAccountSelectionModeSmart, config.OpenAIAccountSelectionModeRoundRobin:
+			return mode
+		}
+	}
+	return config.OpenAIAccountSelectionModeSmart
 }
 
 func (s *OpenAIGatewayService) openAIWSSchedulerWeights() GatewayOpenAIWSSchedulerScoreWeightsView {

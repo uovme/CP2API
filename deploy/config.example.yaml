@@ -301,6 +301,8 @@ gateway:
     payload_log_sample_rate: 0.2
     # 调度与粘连参数
     lb_top_k: 7
+    # 账号选择策略：smart 使用 Sub2API 原智能评分 + Top-K 加权随机；round_robin 使用稳定账号轮询
+    account_selection_mode: smart
     sticky_session_ttl_seconds: 3600
     # 会话哈希迁移兼容开关：新 key 未命中时回退读取旧 SHA-256 key
     session_hash_read_old_fallback: true
